@@ -1,3 +1,5 @@
+import type { SearchFilters } from "./search";
+
 export type TQLRequest = {
   tql: string;
 };
@@ -23,11 +25,16 @@ export type RAGResponse = {
 
 export type RAGRequest = {
   query: string;
-  top_k?: number;
-  use_graph?: boolean;
-  use_memory?: boolean;
-  llm_provider?: string;
-  llm_model?: string;
+  retrieval_mode?: "semantic" | "hybrid";
+  document_id?: number;
+  filters?: SearchFilters;
+  top_k_chunks?: number;
+  top_k_memories?: number;
+  top_k_entities?: number;
+  top_k_documents?: number;
+  include_graph_neighbors?: boolean;
+  max_tokens?: number;
+  system_prompt?: string;
   temperature?: number;
   top_p?: number;
 };

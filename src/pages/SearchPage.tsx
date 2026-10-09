@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { IconSearch } from "@tabler/icons-react";
-import { hybridSearch, semanticSearch } from "../api/client";
-import type { SearchResultItem } from "../api/client";
+import { executeRAG, hybridSearch, semanticSearch } from "../api/client";
+import type { RAGResponse, SearchResultItem } from "../api/client";
 import { useActiveWorkspace } from "../context/WorkspaceContext";
 
 type SearchMode = "semantic" | "hybrid";
@@ -12,6 +12,8 @@ export function SearchPage() {
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(10);
   const [results, setResults] = useState<SearchResultItem[]>([]);
+  const [answer, setAnswer] = useState<RAGResponse | null>(null);
+  const [answerError, setAnswerError] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -44,19 +46,46 @@ export function SearchPage() {
     if (!query.trim()) return;
     setSearching(true);
     setError(null);
+    setAnswerError(null);
+    setAnswer(null);
     setDetailResult(null);
     setSearched(true);
     try {
       const workspaceId = activeWorkspaceId || 1;
       const payload = buildPayload();
-      if (mode === "hybrid") {
-        const data = await hybridSearch(payload as any, workspaceId);
+      const dateFiltered = Boolean(filterDateFrom || filterDateTo);
+      const answerFilters = {
+        ...(filterFilename ? { filename: filterFilename } : {}),
+        ...(filterFileType ? { file_type: filterFileType } : {}),
+        ...(filterDateFrom ? { upload_date_from: filterDateFrom } : {}),
+        ...(filterDateTo ? { upload_date_to: filterDateTo } : {}),
+      };
+      const searchRequest = mode === "hybrid"
+        ? hybridSearch(payload as any, workspaceId)
+        : semanticSearch(payload as any, workspaceId);
+      const [searchResponse, answerResponse] = await Promise.allSettled([
+        searchRequest,
+        executeRAG({
+          query: query.trim(),
+          retrieval_mode: dateFiltered ? "semantic" : "hybrid",
+          top_k_chunks: topK,
+          document_id: filterDocId ? Number(filterDocId) : undefined,
+          filters: Object.keys(answerFilters).length ? answerFilters : undefined,
+        }, workspaceId),
+      ]);
+
+      if (searchResponse.status === "fulfilled") {
+        const data = searchResponse.value;
         setResults(data.results ?? []);
         setTotal(data.total ?? 0);
       } else {
-        const data = await semanticSearch(payload as any, workspaceId);
-        setResults(data.results);
-        setTotal(data.total);
+        throw searchResponse.reason;
+      }
+
+      if (answerResponse.status === "fulfilled") {
+        setAnswer(answerResponse.value);
+      } else {
+        setAnswerError(answerResponse.reason instanceof Error ? answerResponse.reason.message : "Answer generation failed");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
@@ -66,6 +95,11 @@ export function SearchPage() {
       setSearching(false);
     }
   };
+
+  const citations = answer?.sources
+    .filter((source) => source.source === "vectors")
+    .flatMap((source) => source.items.map(toSearchResult))
+    .filter((item): item is SearchResultItem => item !== null) ?? [];
 
   const clearFilters = () => {
     setFilterDocId("");
@@ -214,32 +248,67 @@ export function SearchPage() {
 
       {/* Results */}
       {searched && (
-        <div className="section">
-          {results.length === 0 ? (
-            <div className="empty-state">
-              <span className="empty-icon"><IconSearch size={48} strokeWidth={1.5} /></span>
-              <p className="empty-text">No results found.</p>
-              <p className="empty-hint">Try a different query or adjust filters.</p>
-            </div>
-          ) : (
-            <div className="results-list">
-              {results.map((r, i) => (
-                <div key={`${r.chunk_id}-${i}`} className="result-card" onClick={() => setDetailResult(r)}>
-                  <div className="result-header">
-                    <span className="result-rank">#{i + 1}</span>
-                    <span className="result-doc">{r.document_name}</span>
-                    <span className="result-score">{(r.score * 100).toFixed(1)}%</span>
-                  </div>
-                  <p className="result-content">{truncate(r.content, 300)}</p>
-                  <div className="result-footer">
-                    <span className="result-meta">Chunk #{r.chunk_index} · ID: {r.chunk_id}</span>
-                    <span className="result-detail-link">View details →</span>
-                  </div>
+        <>
+          <div className="section search-answer-section">
+            <div className="section-header"><h3>Answer</h3></div>
+            {searching && !answer && <p className="loading-text">Retrieving context and generating an answer...</p>}
+            {answerError && <div className="msg error">{answerError}</div>}
+            {answer && (
+              <div className="query-result">
+                <div className="rag-answer">
+                  <h4>Grounded answer</h4>
+                  <p>{answer.answer}</p>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+                <div className="rag-meta">
+                  <span>LLM: {answer.llm_provider}/{answer.llm_model || "default"}</span>
+                  <span>Duration: {answer.total_duration_ms.toFixed(0)}ms</span>
+                </div>
+                {citations.length > 0 && (
+                  <div className="rag-sources">
+                    <h4>Sources</h4>
+                    <ol className="search-citations">
+                      {citations.map((citation, index) => (
+                        <li key={citation.chunk_id}>
+                          <button className="btn-ghost" onClick={() => setDetailResult(citation)}>
+                            {citation.document_name} · chunk {citation.chunk_index + 1}
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <details className="section raw-search-results">
+            <summary>View retrieved chunks ({total})</summary>
+            {results.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-icon"><IconSearch size={48} strokeWidth={1.5} /></span>
+                <p className="empty-text">No results found.</p>
+                <p className="empty-hint">Try a different query or adjust filters.</p>
+              </div>
+            ) : (
+              <div className="results-list">
+                {results.map((r, i) => (
+                  <div key={`${r.chunk_id}-${i}`} className="result-card" onClick={() => setDetailResult(r)}>
+                    <div className="result-header">
+                      <span className="result-rank">#{i + 1}</span>
+                      <span className="result-doc">{r.document_name}</span>
+                      <span className="result-score">{(r.score * 100).toFixed(1)}%</span>
+                    </div>
+                    <p className="result-content">{truncate(r.content, 300)}</p>
+                    <div className="result-footer">
+                      <span className="result-meta">Chunk #{r.chunk_index} · ID: {r.chunk_id}</span>
+                      <span className="result-detail-link">View details →</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </details>
+        </>
       )}
       </div>
     </div>
@@ -249,4 +318,23 @@ export function SearchPage() {
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return text.slice(0, max).replace(/\s+\S*$/, "") + "…";
+}
+
+function toSearchResult(item: Record<string, unknown>): SearchResultItem | null {
+  if (
+    typeof item.chunk_id !== "number" ||
+    typeof item.document_id !== "number" ||
+    typeof item.content !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    chunk_id: item.chunk_id,
+    chunk_index: typeof item.chunk_index === "number" ? item.chunk_index : 0,
+    content: item.content,
+    score: typeof item.score === "number" ? item.score : 0,
+    document_id: item.document_id,
+    document_name: typeof item.document_name === "string" ? item.document_name : "Unknown document",
+  };
 }

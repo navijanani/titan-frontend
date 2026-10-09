@@ -294,8 +294,9 @@ export async function executeTQL(req: TQLRequest): Promise<TQLResponse> {
 }
 
 // ── RAG ──
-export async function executeRAG(req: RAGRequest): Promise<RAGResponse> {
-  const res = await fetch(`${BASE}/rag/query`, {
+export async function executeRAG(req: RAGRequest, workspaceId = 1, orgId = 1): Promise<RAGResponse> {
+  const params = new URLSearchParams({ workspace_id: String(workspaceId), org_id: String(orgId) });
+  const res = await fetch(`${BASE}/rag/query?${params}`, {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(req),

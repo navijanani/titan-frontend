@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { executeTQL, executeRAG } from "../api/client";
 import type { TQLResponse, RAGResponse } from "../api/client";
+import { useActiveWorkspace } from "../context/WorkspaceContext";
 
 type QueryMode = "tql" | "rag";
 
@@ -110,6 +111,7 @@ function TQLPanel() {
 }
 
 function RAGPanel() {
+  const { activeWorkspaceId } = useActiveWorkspace();
   const [input, setInput] = useState("");
   const [result, setResult] = useState<RAGResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -125,9 +127,11 @@ function RAGPanel() {
     try {
       const resp = await executeRAG({
         query: input.trim(),
-        use_graph: useGraph,
-        use_memory: useMemory,
-      });
+        retrieval_mode: "semantic",
+        top_k_entities: useGraph ? 10 : 0,
+        top_k_memories: useMemory ? 10 : 0,
+        include_graph_neighbors: useGraph,
+      }, activeWorkspaceId || 1);
       setResult(resp);
     } catch (err) {
       setError(err instanceof Error ? err.message : "RAG query failed");

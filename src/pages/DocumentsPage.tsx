@@ -34,7 +34,7 @@ export function DocumentsPage() {
   );
 
   // Status polling
-  const processingRef = useRef<Set<number>>(new Set());
+  const [processingIds, setProcessingIds] = useState<Set<number>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -44,13 +44,11 @@ export function DocumentsPage() {
       const resp = await listDocuments(0, 100, workspaceId);
       setDocs(resp.documents);
       setTotal(resp.total);
-      for (const d of resp.documents) {
-        if (d.status === "processing" || d.status === "pending") {
-          processingRef.current.add(d.id);
-        } else {
-          processingRef.current.delete(d.id);
-        }
-      }
+      setProcessingIds(new Set(
+        resp.documents
+          .filter((d) => d.status === "processing" || d.status === "pending")
+          .map((d) => d.id),
+      ));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load documents");
     } finally {
@@ -62,15 +60,14 @@ export function DocumentsPage() {
 
   // Auto-poll processing documents every 3s
   useEffect(() => {
-    if (processingRef.current.size === 0) return;
+    if (processingIds.size === 0) return;
     const interval = setInterval(async () => {
-      const ids = Array.from(processingRef.current);
+      const ids = Array.from(processingIds);
       let changed = false;
       for (const id of ids) {
         try {
           const status = await getDocumentStatus(id);
           if (status.status === "completed" || status.status === "failed") {
-            processingRef.current.delete(id);
             changed = true;
           }
         } catch { }
@@ -78,7 +75,7 @@ export function DocumentsPage() {
       if (changed) load();
     }, 3000);
     return () => clearInterval(interval);
-  }, [load]);
+  }, [load, processingIds]);
 
   // Upload
   const handleUpload = async (file: File) => {
@@ -97,7 +94,7 @@ export function DocumentsPage() {
     const workspaceId = activeWorkspaceId || 1;
     try {
       const resp = await uploadFile(file, workspaceId);
-      setUploadMsg(`"${resp.document.filename}" uploaded.`);
+      setUploadMsg(`"${resp.document.filename}" uploaded; processing continues in the background.`);
       load();
     } catch (err) {
       setUploadMsg(err instanceof Error ? err.message : "Upload failed");
